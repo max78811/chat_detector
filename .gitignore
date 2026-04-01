@@ -1,0 +1,6 @@
+bin/
+media/
+session/
+.env
+*.exe
+*.log

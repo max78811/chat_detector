@@ -18,7 +18,7 @@ type Service struct {
 }
 
 func New(cfg *config.Config, storage ports.Storage, log *zap.Logger) (*Service, error) {
-	bot, err := telegram.NewBot(cfg.BotToken, storage, cfg.MediaDir, log.Named("bot"))
+	bot, err := telegram.NewBot(cfg.BotToken, storage, cfg.MediaDir, cfg.AdminIDs, log.Named("bot"))
 	if err != nil {
 		return nil, err
 	}

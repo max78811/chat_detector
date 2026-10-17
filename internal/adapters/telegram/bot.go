@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -48,13 +50,14 @@ type Bot struct {
 	token    string
 	storage  ports.Storage
 	mediaDir string
+	admins   map[int64]bool
 	log      *zap.Logger
 
 	mu    sync.RWMutex
 	cache map[msgKey]*cachedMessage
 }
 
-func NewBot(token string, storage ports.Storage, mediaDir string, log *zap.Logger) (*Bot, error) {
+func NewBot(token string, storage ports.Storage, mediaDir string, adminIDs []int64, log *zap.Logger) (*Bot, error) {
 	api, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		return nil, fmt.Errorf("create bot api: %w", err)
@@ -62,11 +65,17 @@ func NewBot(token string, storage ports.Storage, mediaDir string, log *zap.Logge
 
 	log.Info("authorized bot", zap.String("username", api.Self.UserName))
 
+	admins := make(map[int64]bool, len(adminIDs))
+	for _, id := range adminIDs {
+		admins[id] = true
+	}
+
 	return &Bot{
 		api:      api,
 		token:    token,
 		storage:  storage,
 		mediaDir: mediaDir,
+		admins:   admins,
 		log:      log,
 		cache:    make(map[msgKey]*cachedMessage),
 	}, nil
@@ -271,6 +280,8 @@ func (b *Bot) handleCommand(ctx context.Context, msg *RawMessage) {
 		b.handleStop(ctx, msg)
 	case "/status":
 		b.handleStatus(ctx, msg)
+	case "/users":
+		b.handleUsers(ctx, msg)
 	default:
 		b.sendText(msg.Chat.ID, "Неизвестная команда. Используйте /start, /stop или /status.")
 	}
@@ -366,6 +377,79 @@ func (b *Bot) handleStatus(ctx context.Context, msg *RawMessage) {
 	}
 
 	b.sendText(msg.Chat.ID, status)
+}
+
+// --- Admin commands ---
+
+func (b *Bot) isAdmin(msg *RawMessage) bool {
+	return msg.From != nil && b.admins[msg.From.ID]
+}
+
+// maxMessageLen is kept below Telegram's 4096-char limit to leave room for markup.
+const maxMessageLen = 4000
+
+func (b *Bot) handleUsers(ctx context.Context, msg *RawMessage) {
+	if !b.isAdmin(msg) {
+		b.sendText(msg.Chat.ID, "Неизвестная команда. Используйте /start, /stop или /status.")
+		return
+	}
+
+	users, err := b.storage.ListUsers(ctx)
+	if err != nil {
+		b.log.Error("list users", zap.Error(err))
+		b.sendText(msg.Chat.ID, "Произошла ошибка.")
+		return
+	}
+
+	if len(users) == 0 {
+		b.sendText(msg.Chat.ID, "Пользователей пока нет.")
+		return
+	}
+
+	subscribed, connected := 0, 0
+	lines := make([]string, 0, len(users))
+	for i, u := range users {
+		if u.IsSubscribed {
+			subscribed++
+		}
+		if u.HasConnection {
+			connected++
+		}
+
+		flags := ""
+		if u.IsPremium {
+			flags += "⭐"
+		}
+		if u.IsSubscribed {
+			flags += "🔔"
+		}
+		if u.HasConnection {
+			flags += "🔗"
+		}
+
+		lines = append(lines, fmt.Sprintf("%d. %s <code>%d</code> %s\n   📅 %s",
+			i+1,
+			html.EscapeString(formatUserName(u.FirstName, u.LastName, u.Username)),
+			u.ID,
+			flags,
+			u.RegisteredAt.Format("02.01.2006 15:04")))
+	}
+
+	header := fmt.Sprintf("👥 <b>Пользователи: %d</b>\n🔔 Подписаны: %d\n🔗 Бизнес-подключение: %d\n",
+		len(users), subscribed, connected)
+
+	// Split into several messages to stay within Telegram's length limit.
+	var sb strings.Builder
+	sb.WriteString(header)
+	for _, line := range lines {
+		if sb.Len()+len(line)+1 > maxMessageLen {
+			b.sendText(msg.Chat.ID, sb.String())
+			sb.Reset()
+		}
+		sb.WriteString("\n")
+		sb.WriteString(line)
+	}
+	b.sendText(msg.Chat.ID, sb.String())
 }
 
 // --- Business connection handling ---

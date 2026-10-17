@@ -11,6 +11,15 @@ type User struct {
 	IsPremium bool
 }
 
+// UserInfo is a user with subscription and business connection status,
+// used for the admin users list.
+type UserInfo struct {
+	User
+	IsSubscribed  bool
+	HasConnection bool
+	RegisteredAt  time.Time
+}
+
 // Subscriber is a premium user who subscribed to the bot notifications.
 type Subscriber struct {
 	UserID    int64

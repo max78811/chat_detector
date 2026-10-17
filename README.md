@@ -101,6 +101,7 @@ make run
 | `DB_PASSWORD`  | `tgbot`     | PostgreSQL password          |
 | `DB_NAME`      | `tgbot`     | PostgreSQL database name     |
 | `MEDIA_DIR`    | `./media`   | Directory for downloaded media |
+| `ADMIN_IDS`    | —           | Comma-separated Telegram user IDs of bot admins |
 
 ## Makefile Targets
 
@@ -125,6 +126,7 @@ make run
 | `/start`  | Subscribe to notifications (Premium only)    |
 | `/stop`   | Unsubscribe from notifications               |
 | `/status` | Check subscription and business connection   |
+| `/users`  | List all users (admins only, see `ADMIN_IDS`) |
 
 ## Database Schema
 

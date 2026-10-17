@@ -9,6 +9,7 @@ import (
 type UserStorage interface {
 	SaveUser(ctx context.Context, user *domain.User) error
 	GetUser(ctx context.Context, id int64) (*domain.User, error)
+	ListUsers(ctx context.Context) ([]domain.UserInfo, error)
 }
 
 // SubscriberStorage defines the port for subscriber persistence.

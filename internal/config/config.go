@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -18,6 +20,9 @@ type Config struct {
 
 	// Paths
 	MediaDir string
+
+	// Telegram user IDs allowed to use admin commands
+	AdminIDs []int64
 }
 
 func (c *Config) DatabaseURL() string {
@@ -38,6 +43,18 @@ func Load() (*Config, error) {
 
 	if cfg.BotToken == "" {
 		return nil, fmt.Errorf("TG_BOT_TOKEN is required")
+	}
+
+	for _, raw := range strings.Split(getEnv("ADMIN_IDS", ""), ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid ADMIN_IDS value %q: %w", raw, err)
+		}
+		cfg.AdminIDs = append(cfg.AdminIDs, id)
 	}
 
 	return cfg, nil

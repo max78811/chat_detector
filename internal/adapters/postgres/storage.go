@@ -62,6 +62,31 @@ func (s *Storage) GetUser(ctx context.Context, id int64) (*domain.User, error) {
 	return &user, err
 }
 
+func (s *Storage) ListUsers(ctx context.Context) ([]domain.UserInfo, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT u.id, u.first_name, u.last_name, u.username, u.is_premium, u.created_at,
+			EXISTS (SELECT 1 FROM subscribers s WHERE s.user_id = u.id),
+			EXISTS (SELECT 1 FROM business_connections bc WHERE bc.user_id = u.id AND bc.is_enabled)
+		FROM users u
+		ORDER BY u.created_at
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []domain.UserInfo
+	for rows.Next() {
+		var u domain.UserInfo
+		if err := rows.Scan(&u.ID, &u.FirstName, &u.LastName, &u.Username, &u.IsPremium,
+			&u.RegisteredAt, &u.IsSubscribed, &u.HasConnection); err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
 // --- SubscriberStorage ---
 
 func (s *Storage) AddSubscriber(ctx context.Context, sub *domain.Subscriber) error {

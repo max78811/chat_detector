@@ -769,8 +769,33 @@ func (b *Bot) sendMedia(ctx context.Context, chatID int64, mediaPath string, med
 		msg = doc
 	}
 
-	if _, err := b.api.Send(msg); err != nil {
-		b.log.Error("send media", zap.Error(err))
+	_, err = b.api.Send(msg)
+	if err == nil {
+		return
+	}
+
+	b.log.Error("send media",
+		zap.String("type", mediaType),
+		zap.String("path", mediaPath),
+		zap.Error(err))
+
+	// Voice/video notes can be blocked by the recipient's privacy settings
+	// (VOICE_MESSAGES_FORBIDDEN) — fall back to sending the file as a document.
+	if mediaType != "video_note" && mediaType != "voice" {
+		return
+	}
+
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		b.log.Error("rewind media file", zap.Error(err))
+		return
+	}
+
+	doc := tgbotapi.NewDocument(chatID, fileReader)
+	doc.Caption = caption
+	// Keep Telegram from turning the file back into a voice/video note.
+	doc.DisableContentTypeDetection = true
+	if _, err := b.api.Send(doc); err != nil {
+		b.log.Error("send media as document", zap.Error(err))
 	}
 }
 

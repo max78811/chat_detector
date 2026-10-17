@@ -18,6 +18,12 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	// retention is how long cached messages and downloaded media are kept.
+	retention       = 7 * 24 * time.Hour
+	cleanupInterval = time.Hour
+)
+
 // cachedMessage holds a message in memory for edit/delete detection.
 type cachedMessage struct {
 	SenderID   int64
@@ -27,6 +33,7 @@ type cachedMessage struct {
 	MediaType  string
 	Date       time.Time
 	ChatID     int64
+	CachedAt   time.Time
 }
 
 // msgKey uniquely identifies a message within a chat.
@@ -85,22 +92,24 @@ type RawBusinessConnection struct {
 }
 
 type RawDeletedBizMessages struct {
-	BusinessConnectionID string `json:"business_connection_id"`
+	BusinessConnectionID string  `json:"business_connection_id"`
 	Chat                 RawChat `json:"chat"`
 	Date                 int64   `json:"date"`
 	MessageIDs           []int   `json:"message_ids"`
 }
 
 type RawMessage struct {
-	MessageID            int        `json:"message_id"`
-	From                 *RawUser   `json:"from"`
-	Chat                 RawChat    `json:"chat"`
-	Date                 int64      `json:"date"`
-	Text                 string     `json:"text"`
-	BusinessConnectionID string     `json:"business_connection_id"`
-	Photo                []RawPhoto `json:"photo"`
-	Video                *RawVideo  `json:"video"`
-	Document             *RawDoc    `json:"document"`
+	MessageID            int           `json:"message_id"`
+	From                 *RawUser      `json:"from"`
+	Chat                 RawChat       `json:"chat"`
+	Date                 int64         `json:"date"`
+	Text                 string        `json:"text"`
+	BusinessConnectionID string        `json:"business_connection_id"`
+	Photo                []RawPhoto    `json:"photo"`
+	Video                *RawVideo     `json:"video"`
+	Document             *RawDoc       `json:"document"`
+	VideoNote            *RawVideoNote `json:"video_note"`
+	Voice                *RawVoice     `json:"voice"`
 }
 
 type RawUser struct {
@@ -142,6 +151,22 @@ type RawDoc struct {
 	FileSize     int    `json:"file_size"`
 }
 
+type RawVideoNote struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Length       int    `json:"length"`
+	Duration     int    `json:"duration"`
+	FileSize     int    `json:"file_size"`
+}
+
+type RawVoice struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Duration     int    `json:"duration"`
+	MimeType     string `json:"mime_type"`
+	FileSize     int    `json:"file_size"`
+}
+
 type getUpdatesResponse struct {
 	OK     bool        `json:"ok"`
 	Result []RawUpdate `json:"result"`
@@ -152,6 +177,8 @@ func (b *Bot) Run(ctx context.Context) error {
 	if err := os.MkdirAll(b.mediaDir, 0o755); err != nil {
 		return fmt.Errorf("create media dir: %w", err)
 	}
+
+	go b.cleanupLoop(ctx)
 
 	offset := 0
 	client := &http.Client{Timeout: 65 * time.Second}
@@ -409,6 +436,7 @@ func (b *Bot) handleBusinessMessage(ctx context.Context, msg *RawMessage) {
 		MediaType:  mediaType,
 		Date:       time.Unix(msg.Date, 0),
 		ChatID:     msg.Chat.ID,
+		CachedAt:   time.Now(),
 	}
 	b.mu.Unlock()
 
@@ -523,6 +551,68 @@ func (b *Bot) notifyDeleted(ctx context.Context, chatID int64, msg *cachedMessag
 	b.sendText(chatID, text)
 }
 
+// --- Retention ---
+
+func (b *Bot) cleanupLoop(ctx context.Context) {
+	b.cleanup()
+
+	ticker := time.NewTicker(cleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.cleanup()
+		}
+	}
+}
+
+// cleanup removes cached messages and media files older than retention.
+func (b *Bot) cleanup() {
+	cutoff := time.Now().Add(-retention)
+
+	b.mu.Lock()
+	removed := 0
+	for key, msg := range b.cache {
+		if msg.CachedAt.Before(cutoff) {
+			delete(b.cache, key)
+			removed++
+		}
+	}
+	b.mu.Unlock()
+
+	// Media files are cleaned by mtime, so leftovers from previous runs are removed too.
+	entries, err := os.ReadDir(b.mediaDir)
+	if err != nil {
+		b.log.Error("read media dir", zap.Error(err))
+		return
+	}
+
+	removedFiles := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(b.mediaDir, e.Name())); err != nil {
+			b.log.Error("remove media file", zap.String("name", e.Name()), zap.Error(err))
+			continue
+		}
+		removedFiles++
+	}
+
+	if removed > 0 || removedFiles > 0 {
+		b.log.Info("retention cleanup",
+			zap.Int("messages", removed),
+			zap.Int("files", removedFiles))
+	}
+}
+
 // --- Media download ---
 
 func (b *Bot) downloadMedia(ctx context.Context, msg *RawMessage) (path string, mediaType string) {
@@ -550,6 +640,16 @@ func (b *Bot) downloadMedia(ctx context.Context, msg *RawMessage) (path string, 
 		}
 		path = filepath.Join(b.mediaDir, fmt.Sprintf("video_%d_%d%s", msg.MessageID, time.Now().UnixNano(), ext))
 		mediaType = "video"
+
+	case msg.VideoNote != nil:
+		fileID = msg.VideoNote.FileID
+		path = filepath.Join(b.mediaDir, fmt.Sprintf("videonote_%d_%d.mp4", msg.MessageID, time.Now().UnixNano()))
+		mediaType = "video_note"
+
+	case msg.Voice != nil:
+		fileID = msg.Voice.FileID
+		path = filepath.Join(b.mediaDir, fmt.Sprintf("voice_%d_%d.ogg", msg.MessageID, time.Now().UnixNano()))
+		mediaType = "voice"
 
 	case msg.Document != nil:
 		fileID = msg.Document.FileID
@@ -656,6 +756,13 @@ func (b *Bot) sendMedia(ctx context.Context, chatID int64, mediaPath string, med
 		video := tgbotapi.NewVideo(chatID, fileReader)
 		video.Caption = caption
 		msg = video
+	case "video_note":
+		// Video notes don't support captions.
+		msg = tgbotapi.NewVideoNote(chatID, 0, fileReader)
+	case "voice":
+		voice := tgbotapi.NewVoice(chatID, fileReader)
+		voice.Caption = caption
+		msg = voice
 	default:
 		doc := tgbotapi.NewDocument(chatID, fileReader)
 		doc.Caption = caption

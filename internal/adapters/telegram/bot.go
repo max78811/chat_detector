@@ -785,12 +785,8 @@ func (b *Bot) sendMedia(ctx context.Context, chatID int64, mediaPath string, med
 		return
 	}
 
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		b.log.Error("rewind media file", zap.Error(err))
-		return
-	}
-
-	doc := tgbotapi.NewDocument(chatID, fileReader)
+	// The library closes the reader after upload, so send by path (reopened on upload).
+	doc := tgbotapi.NewDocument(chatID, tgbotapi.FilePath(mediaPath))
 	doc.Caption = caption
 	// Keep Telegram from turning the file back into a voice/video note.
 	doc.DisableContentTypeDetection = true
